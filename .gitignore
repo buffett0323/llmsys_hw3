@@ -1,0 +1,12 @@
+minitorch.egg-info/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+.coverage.xml
+.coverage.xml.*
+.coverage.xml.*.*
+.coverage.xml.*.*.*
+.coverage.xml.*.*.*.*
