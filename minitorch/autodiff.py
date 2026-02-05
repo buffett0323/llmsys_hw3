@@ -147,9 +147,11 @@ def backpropagate(variable: Variable, deriv: Any) -> None:
     # TODO
    
     # raise NotImplementedError("Task Autodiff Not Implemented Yet")
-    outgrads = {variable.unique_id: deriv}
+    topo_sort = topological_sort(variable)
+    outgrads = {v.unique_id:0 for v in topo_sort}
+    outgrads[variable.unique_id] = deriv
     
-    for node in topological_sort(variable):
+    for node in topo_sort:
         if node.is_constant():
             continue
         
