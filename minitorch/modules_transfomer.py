@@ -333,13 +333,16 @@ class DecoderLM(Module):
         # 6. Apply final layer normalization
         # 7. Project to vocabulary size using lm_head
         x = self.token_embeddings(idx)
-        x = x + self.position_embeddings(np.arange(seq_len))
+        
+        pos = tensor(list(range(seq_len)), backend = self.backend, requires_grad = True).view(1, seq_len)
+        x = x + self.position_embeddings(pos)
+        
         x = self.dropout(x)
         x = self.t_layer_1(x)
         x = self.t_layer_2(x)
         x = self.t_layer_3(x)
         x = self.t_layer_4(x)
-        x = self.ln(x)
+        x = self.ln(x.view(batch_size * seq_len, self.n_embd)).view(batch_size, seq_len, self.n_embd)
         x = self.lm_head(x)
         return x
         ### END ASSIGN3_3
