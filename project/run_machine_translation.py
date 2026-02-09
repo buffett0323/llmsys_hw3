@@ -307,7 +307,9 @@ def generate(
             # TODO
             # run the model with current token_ids, and predict the next token (gen_id)
             # hint: obtain the logits of next token, and take the argmax.
-            gen_id = 0
+            if len(token_ids) == model_max_length:
+                break
+            
             # raise NotImplementedError("Generation Function Not Implemented Yet")
             input_ids = minitorch.tensor(token_ids, backend=backend)
             logits = model(idx=input_ids).to_numpy()
