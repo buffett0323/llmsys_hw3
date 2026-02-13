@@ -56,21 +56,32 @@ def get_dataset(dataset_name, model_max_length):
     return dataset, src_key, tgt_key
 
 
-def get_tokenizer(examples, vocab_size, src_key, tgt_key, workdir):
+def get_tokenizer(examples, vocab_size, src_key, tgt_key, workdir, load_from_workdir=False):
     """
     Train and save a ByteLevelBPETokenizer on the provided dataset.
-    
+
     Args:
         examples (list): Dataset examples for tokenizer training
         vocab_size (int): Desired vocabulary size
         src_key (str): Source language key in examples
         tgt_key (str): Target language key in examples
         workdir (str): Directory to save tokenizer files
+        load_from_workdir (bool): If True and tokenizer exists in workdir, load it instead of training
 
     Returns:
         AutoTokenizer: Trained tokenizer with special tokens
                       (e.g., "<eos_de>", "<eos_en>", "<pad>")
     """
+    tokenizer_path = f'{workdir}/tokenizer.json'
+    if load_from_workdir and os.path.exists(tokenizer_path):
+        tokenizer = AutoTokenizer.from_pretrained(
+            workdir,
+            eos_token=None,
+            bos_token=None,
+            pad_token=None,
+            unk_token=None)
+        return tokenizer
+
     tokenizer = ByteLevelBPETokenizer()
 
     # Customized training
@@ -79,7 +90,7 @@ def get_tokenizer(examples, vocab_size, src_key, tgt_key, workdir):
         vocab_size=vocab_size,
         special_tokens=[f'<eos_{src_key}>', f'<eos_{tgt_key}>', '<pad>'])
 
-    tokenizer.save(f'{workdir}/tokenizer.json')
+    tokenizer.save(tokenizer_path)
     json.dump({'model_type': 'gpt2'}, open(f'{workdir}/config.json', 'w'))
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -307,16 +318,15 @@ def generate(
             # TODO
             # run the model with current token_ids, and predict the next token (gen_id)
             # hint: obtain the logits of next token, and take the argmax.
-            if len(token_ids) == model_max_length:
-                break
             
             # raise NotImplementedError("Generation Function Not Implemented Yet")
-            input_ids = minitorch.tensor(token_ids, backend=backend)
+            # Model expects (batch_size, seq_len); add batch dim for single sequence
+            input_ids = minitorch.tensor_from_numpy(np.array([token_ids]), backend=backend)
             logits = model(idx=input_ids).to_numpy()
 
             # last token of logits
-            last_token_logits = logits[0, -1, :]
-            gen_id = np.argmax(last_token_logits)
+            last_token_logits = logits[0, len(token_ids) - 1]
+            gen_id = int(np.argmax(last_token_logits))
             
             # END ASSIGN3_4
 
@@ -328,6 +338,30 @@ def generate(
         gen_sents.append(tokenizer.decode(token_ids[len_src:]))
 
     return gen_sents
+
+
+def save_checkpoint(model, workdir, epoch_idx, backend):
+    """Save model weights to workdir/checkpoint_epoch{epoch_idx}.npz."""
+    state = {}
+    for name, param in model.named_parameters():
+        state[name] = param.value.to_numpy()
+    path = f'{workdir}/checkpoint_epoch{epoch_idx}.npz'
+    np.savez(path, **state)
+    print(f'Saved checkpoint to {path}')
+
+
+def load_checkpoint(model, workdir, epoch_idx, backend):
+    """Load model weights from workdir/checkpoint_epoch{epoch_idx}.npz."""
+    path = f'{workdir}/checkpoint_epoch{epoch_idx}.npz'
+    if not os.path.exists(path):
+        raise FileNotFoundError(f'Checkpoint not found: {path}')
+    data = np.load(path)
+    for name, param in model.named_parameters():
+        if name not in data:
+            raise KeyError(f'Checkpoint missing parameter: {name}')
+        arr = data[name]
+        param.update(minitorch.tensor_from_numpy(arr, backend=backend))
+    print(f'Loaded checkpoint from {path}')
 
 
 def evaluate_bleu(examples, gen_sents, tgt_key):
@@ -354,15 +388,16 @@ def main(
     model_max_length=40,
     n_epochs=20,
     batch_size=128,
-    learning_rate=0.02,
+    learning_rate=0.001, #0.02,
     samples_per_epoch=20000,
     n_vocab=10000,
     n_embd=256,
-    seed=11111
+    seed=11111,
+    resume_from_epoch=None
 ):
     """
     Train and evaluate a decoder-only transformer language model.
-    
+
     Args:
         dataset_name (str): Name of the dataset to use, default 'bbaaaa/iwslt14-de-en-preprocess'
         model_max_length (int): Maximum sequence length, default 40
@@ -373,6 +408,7 @@ def main(
         n_vocab (int): Vocabulary size for tokenizer, default 10000
         n_embd (int): Embedding dimension, default 256
         seed (int): Random seed, default 11111
+        resume_from_epoch (int): If set, load checkpoint_epoch{resume_from_epoch-1}.npz and train from this epoch (tokenizer loaded from workdir)
     """
 
     np.random.seed(seed)
@@ -397,6 +433,12 @@ def main(
     model = DecoderLM(**config)
     optimizer = minitorch.Adam(model.parameters(), lr=learning_rate)
 
+    start_epoch = 0
+    if resume_from_epoch is not None:
+        load_checkpoint(model, workdir, resume_from_epoch - 1, backend)
+        start_epoch = resume_from_epoch
+        print(f'Resuming from epoch {start_epoch} (loaded weights from epoch {resume_from_epoch - 1})')
+
     dataset, src_key, tgt_key = get_dataset(
         dataset_name=dataset_name, model_max_length=model_max_length)
 
@@ -405,7 +447,8 @@ def main(
         vocab_size=config['n_vocab'],
         src_key=src_key,
         tgt_key=tgt_key,
-        workdir=workdir)
+        workdir=workdir,
+        load_from_workdir=(resume_from_epoch is not None))
 
     collate_fn = partial(
         collate_batch,
@@ -415,7 +458,7 @@ def main(
         model_max_length=model_max_length,
         backend=backend)
 
-    for epoch_idx in range(n_epochs):
+    for epoch_idx in range(start_epoch, n_epochs):
         desc = f'epoch {epoch_idx} / {n_epochs}'
 
         train(
@@ -459,6 +502,8 @@ def main(
         json.dump(
             {'validation_loss': float(validation_loss), **eval_scores},
             open(f'{workdir}/eval_results_epoch{epoch_idx}.json', 'w'))
+
+        save_checkpoint(model, workdir, epoch_idx, backend)
 
 
 if __name__ == '__main__':
